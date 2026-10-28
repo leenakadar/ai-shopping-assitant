@@ -59,6 +59,7 @@ class ChatRequest(BaseModel):
     message: str
     max_budget: float = None      # optional — user can specify budget
     category: str = None          # optional — user can specify category
+    session_id: str = None        # optional — identifies one chat session
 
 
 class ProductResult(BaseModel):
@@ -80,7 +81,58 @@ class ChatResponse(BaseModel):
     recommendation: str           # natural language response from LLM
     top_products: list[ProductResult]
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Conversation memory
+# In-memory for now. To switch to Redis later, only the bodies of
+# add_to_history() and get_history() need to change.
+# _save_exchange() calls those two, so it stays the same.
+# ─────────────────────────────────────────────────────────────────────────────
 
+MAX_HISTORY_MESSAGES = 6
+_conversation_history: dict[str, list[dict[str, str]]] = {}
+
+
+def add_to_history(session_id: str, role: str, text: str) -> None:
+    """
+    Saves one message to a session's conversation history.
+
+    Args:
+        session_id: Identifies one chat session.
+        role: Who wrote the message, "user" or "assistant".
+        text: The message text.
+    """
+    history = _conversation_history.setdefault(session_id, [])
+    history.append({"role": role, "text": text})
+    del history[:-MAX_HISTORY_MESSAGES]  # keep only the latest messages
+
+
+def get_history(session_id: str) -> list[dict[str, str]]:
+    """
+    Returns the saved messages for a session, oldest first.
+
+    Args:
+        session_id: Identifies one chat session.
+
+    Returns:
+        list[dict]: Messages with "role" and "text". Empty if the session is new.
+    """
+    return list(_conversation_history.get(session_id, []))
+
+def _save_exchange(session_id: str, message: str, recommendation: str) -> None:
+    """
+    Saves a user message and the assistant reply to the session history.
+
+    Args:
+        session_id: Identifies one chat session.
+        message: The user's message.
+        recommendation: The assistant's reply.
+    """
+    add_to_history(session_id, "user", message)
+    add_to_history(session_id, "assistant", recommendation)
+    logger.info(
+        f"MEMORY   | session={session_id} "
+        f"| messages={len(get_history(session_id))}"
+    )
 # ─────────────────────────────────────────────────────────────────────────────
 # Endpoints
 # ─────────────────────────────────────────────────────────────────────────────
@@ -145,14 +197,16 @@ def chat(request: ChatRequest):
 
     # ── Step 3 — Recommend ────────────────────────────────────────────────────
     t0 = time.time()
-    recommendation = get_recommendation(request.message, top_products)
+    history = get_history(request.session_id) if request.session_id else None
+    recommendation = get_recommendation(request.message, top_products, history)
     llm_time = time.time() - t0
 
     total_time = time.time() - pipeline_start
 
     logger.info(f"LLM      | time={llm_time:.3f}s")
     logger.info(f"COMPLETE | total_time={total_time:.3f}s")
-
+    if request.session_id:
+        _save_exchange(request.session_id, request.message, recommendation)
     return ChatResponse(
         user_message=request.message,
         recommendation=recommendation,

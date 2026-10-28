@@ -22,6 +22,7 @@ Students:
 """
 
 import os
+import uuid
 from typing import Any
 import requests
 import streamlit as st
@@ -190,6 +191,7 @@ def query_chat_api(
     message: str,
     max_budget: float | None = None,
     category: str | None = None,
+    session_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Calls the POST /chat endpoint on the backend pipeline.
@@ -199,6 +201,7 @@ def query_chat_api(
         message: The user's query text (e.g. "Best phone under 20000").
         max_budget: Optional budget limit in INR.
         category: Optional product category filter.
+        session_id: Optional chat session id so the backend can remember earlier messages.
 
     Returns:
         dict: The response payload containing recommendation and top_products.
@@ -212,6 +215,8 @@ def query_chat_api(
         payload["max_budget"] = max_budget
     if category and category.strip():
         payload["category"] = category.strip()
+    if session_id:
+        payload["session_id"] = session_id
 
     response = requests.post(f"{base_url}/chat", json=payload, timeout=30.0)
     response.raise_for_status()
@@ -375,7 +380,12 @@ def _execute_search(
     """
     with st.spinner("Searching stores, scoring specs, and generating recommendations..."):
         try:
-            result = query_chat_api(base_url, query.strip(), budget, category)
+            result = query_chat_api(
+                base_url,
+                query.strip(),
+                budget, category,
+                st.session_state.get("session_id"),
+            )
             st.session_state["last_result"] = result
         except requests.HTTPError as err:
             if err.response is not None and err.response.status_code == 404:
@@ -396,6 +406,8 @@ def main() -> None:
     """Main application entry point."""
     st.set_page_config(page_title="AI Shopping Assistant", page_icon="🛍️", layout="wide")
     inject_custom_css()
+    if "session_id" not in st.session_state:
+        st.session_state["session_id"] = str(uuid.uuid4())
 
     st.markdown('<div class="main-header">🛍️ AI Shopping Assistant</div>', unsafe_allow_html=True)
     st.markdown(
